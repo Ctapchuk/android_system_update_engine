@@ -286,7 +286,10 @@ bool DynamicPartitionControlAndroid::UnmapPartitionOnDeviceMapper(
 }
 
 bool DynamicPartitionControlAndroid::UnmapAllPartitions() {
-  snapshot_->UnmapAllSnapshots();
+  if (ExpectMetadataMounted()) {
+    snapshot_->UnmapAllSnapshots();
+  }
+
   if (mapped_devices_.empty()) {
     return false;
   }
@@ -424,6 +427,13 @@ bool DynamicPartitionControlAndroid::GetDeviceDir(std::string* out) {
   return true;
 }
 
+static bool IsIncrementalUpdate(const DeltaArchiveManifest& manifest) {
+  const auto& partitions = manifest.partitions();
+  return std::any_of(partitions.begin(), partitions.end(), [](const auto& p) {
+    return p.has_old_partition_info();
+  });
+}
+
 bool DynamicPartitionControlAndroid::PreparePartitionsForUpdate(
     uint32_t source_slot,
     uint32_t target_slot,
@@ -486,9 +496,20 @@ bool DynamicPartitionControlAndroid::PreparePartitionsForUpdate(
     // - If !target_supports_snapshot_ or PrepareSnapshotPartitionsForUpdate
     //   failed in recovery, explicitly CancelUpdate().
     if (target_supports_snapshot_) {
-      if (PrepareSnapshotPartitionsForUpdate(
+      // Skip creating any COW partitions on non-incremental updates in recovery mode
+      if (!IsRecovery() || (IsRecovery() && (IsIncrementalUpdate(manifest) || android::base::GetProperty("ro.virtual_ab.skip_snapshot_creation", "") != "true"))) {
+        if (PrepareSnapshotPartitionsForUpdate(
               source_slot, target_slot, manifest, required_size)) {
-        return true;
+          return true;
+        }
+      } else {
+        // Hack: make the code below think that /metadata is not mounted to skip snapshot methods.
+        // The code checks the snapshot state that was supposed to be set
+        // in the PrepareSnapshotPartitionsForUpdate -> SnapshotManager::CreateUpdateSnapshots function,
+        // and it will fall into an error if the snapshot state has not been set.
+        // However, it will not use snapshot methods if /metadata is not mounted.
+        LOG(INFO) << "Skip snapshot creation..";
+        metadata_device_ = nullptr;
       }
 
       // Virtual A/B device doing Virtual A/B update in Android mode must use
@@ -1436,7 +1457,7 @@ std::optional<base::FilePath> DynamicPartitionControlAndroid::GetSuperDevice() {
 }
 
 bool DynamicPartitionControlAndroid::MapAllPartitions() {
-  return snapshot_->MapAllSnapshots(kMapSnapshotTimeout);
+  return ExpectMetadataMounted() && snapshot_->MapAllSnapshots(kMapSnapshotTimeout);
 }
 
 bool DynamicPartitionControlAndroid::IsDynamicPartition(
@@ -1459,7 +1480,7 @@ bool DynamicPartitionControlAndroid::IsDynamicPartition(
 }
 
 bool DynamicPartitionControlAndroid::UpdateUsesSnapshotCompression() {
-  return GetVirtualAbFeatureFlag().IsEnabled() &&
+  return GetVirtualAbFeatureFlag().IsEnabled() && ExpectMetadataMounted() &&
          snapshot_->UpdateUsesCompression();
 }
 
