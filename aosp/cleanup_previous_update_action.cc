@@ -214,6 +214,13 @@ void CleanupPreviousUpdateAction::CheckSlotMarkedSuccessfulOrSchedule() {
     metadata_device_ = snapshot_->EnsureMetadataMounted();
   }
 
+  if (android::base::GetProperty("ro.virtual_ab.skip_snapshot_check", "") == "true") {
+    LOG(INFO) << "Skip snapshot check..";
+    processor_->ActionComplete(
+        this, kIsRecovery ? ErrorCode::kSuccess : ErrorCode::kError);
+    return;
+  }
+
   if (metadata_device_ == nullptr) {
     LOG(ERROR) << "Failed to mount /metadata.";
     // If metadata is erased but not formatted, it is possible to not mount
